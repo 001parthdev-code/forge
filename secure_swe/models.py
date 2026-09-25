@@ -7,7 +7,7 @@ All models are plain dataclasses and are JSON-serializable via dataclasses.asdic
 from __future__ import annotations
 
 import dataclasses
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Union
 
 
 @dataclasses.dataclass
@@ -204,6 +204,76 @@ class RemediationPlan:
 
     # Planner confidence in the proposed transformation.
     confidence: Confidence
+
+    def to_dict(self) -> dict:
+        """Return a plain dict suitable for JSON serialisation."""
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Module 4 — Controlled Patcher models
+# ---------------------------------------------------------------------------
+
+# Possible outcomes of a patch-application attempt.
+PatchStatus = Literal[
+    "applied",
+    "already_applied",
+    "drift_detected",
+    "path_traversal",
+    "target_missing",
+    "unsupported_strategy",
+    "write_error",
+]
+
+
+@dataclasses.dataclass
+class AppliedPatch:
+    """
+    Record of a single patch-application attempt performed by the Controlled
+    Patcher.
+
+    Traceability chain:
+        SecurityFinding → RemediationPlan → AppliedPatch
+
+    All fields are JSON-serializable via dataclasses.asdict() / to_dict().
+    """
+
+    # Deterministic identifier: SHA-256 hex of "patch|<plan_id>", 16 chars.
+    patch_id: str
+
+    # The RemediationPlan.plan_id that authorised this patch.
+    plan_id: str
+
+    # The SecurityFinding.id that originated the plan.  Preserved for full
+    # traceability: finding → plan → patch.
+    finding_id: str
+
+    # Repository-relative path of the file that was (or was to be) modified.
+    target_file: str
+
+    # SHA-256 hex digest of the target file *before* the patch was applied.
+    # None when the file could not be read (e.g. target_missing).
+    before_sha256: Optional[str]
+
+    # SHA-256 hex digest of the target file *after* a successful patch.
+    # None when applied is False.
+    after_sha256: Optional[str]
+
+    # Verbatim original code fragment that was replaced (mirrors plan.original_code).
+    original_code: str
+
+    # Verbatim replacement code that was written (mirrors plan.proposed_code).
+    # None when the plan carried no proposed_code.
+    replacement_code: Optional[str]
+
+    # True when the patch was written to disk and the file was mutated.
+    applied: bool
+
+    # One of the PatchStatus literals above.
+    status: PatchStatus
+
+    # Human-readable explanation when applied is False, else None.
+    failure_reason: Optional[str]
 
     def to_dict(self) -> dict:
         """Return a plain dict suitable for JSON serialisation."""
