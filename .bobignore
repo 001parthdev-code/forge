@@ -1,0 +1,19 @@
+﻿# Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Git internals
+.git/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Generated/cache data
+__pycache__/
+.pytest_cache/
+artifacts/
+evaluation/results/
