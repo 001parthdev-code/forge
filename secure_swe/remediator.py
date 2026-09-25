@@ -42,6 +42,7 @@ import re
 from typing import List, Optional
 
 from secure_swe.models import (
+    FailureFeedback,
     RemediationPlan,
     RemediationStrategy,
     RepoInventory,
@@ -423,3 +424,140 @@ def plan_remediations(
     Returns plans in the same order as *findings*.
     """
     return [plan_remediation(f, inventory) for f in findings]
+
+
+# ---------------------------------------------------------------------------
+# Failure-feedback-aware replanning
+# ---------------------------------------------------------------------------
+
+# Strategies ordered from most-restrictive to fallback for command injection.
+# The planner will only escalate if the current strategy failed and there is
+# a meaningful alternative that addresses the failure evidence.
+_STRATEGY_ESCALATION: dict[str, str] = {
+    # If the shell-string replacement caused existing-test failures (e.g.
+    # because the function signature changed or the program name was wrong),
+    # fall back to the os.system → subprocess.run migration strategy which
+    # uses check=True and passes safer defaults.
+    "replace_shell_string_with_arg_list": "replace_os_system_with_subprocess_list",
+}
+
+
+def plan_remediation_with_feedback(
+    finding: "SecurityFinding",
+    inventory: "RepoInventory",
+    previous_feedback: "FailureFeedback",
+) -> "RemediationPlan":
+    """
+    Produce a revised RemediationPlan using structured failure evidence from
+    a previous attempt.
+
+    This is the ENGINEERING LOOP entry point, not the RETRY LOOP.
+
+    The function inspects *previous_feedback* to determine whether a
+    meaningful alternative strategy exists.  If the only viable strategy
+    has already been tried and failed, it returns a planning_failure plan
+    so the orchestrator can escalate to HUMAN_REVIEW_REQUIRED rather than
+    blindly repeating an identical remediation.
+
+    Parameters
+    ----------
+    finding:
+        The original SecurityFinding (unchanged between attempts).
+    inventory:
+        The RepoInventory of the *baseline* (not the failed workspace).
+    previous_feedback:
+        Structured failure evidence from the previous attempt.
+
+    Returns
+    -------
+    RemediationPlan
+        A revised plan, or a planning_failure plan when no alternative exists.
+    """
+    prev_strategy = previous_feedback.previous_strategy
+    failures = set(previous_feedback.verification_failures)
+
+    # -----------------------------------------------------------------------
+    # Decision tree: what kind of failure occurred?
+    # -----------------------------------------------------------------------
+
+    # Case 1: security test passed but existing tests failed.
+    # The security fix was correct but it broke application behavior.
+    # Try the alternative strategy (if one exists) which may preserve behavior.
+    existing_failed = "existing_tests_failed" in failures
+    security_failed = "security_regression_failed" in failures
+    finding_present = "finding_still_present" in failures
+
+    if existing_failed and not security_failed and not finding_present:
+        # The patch removed the vulnerability but broke existing tests.
+        # Escalate to an alternative strategy that may be more behavior-preserving.
+        next_strategy = _STRATEGY_ESCALATION.get(prev_strategy)
+        if next_strategy is None or next_strategy == prev_strategy:
+            return _planning_failure(
+                finding,
+                reason=(
+                    f"Attempt {previous_feedback.attempt_number} failed because "
+                    f"existing tests broke after applying strategy "
+                    f"'{prev_strategy}'.  No alternative strategy is available "
+                    f"for this finding pattern.  Human review required.  "
+                    f"Failed tests: {previous_feedback.failed_existing_tests}."
+                ),
+            )
+        # Force the alternative strategy by producing a fresh plan and
+        # overriding the strategy field.
+        base_plan = plan_remediation(finding, inventory)
+        if base_plan.strategy in ("unsupported", "planning_failure"):
+            return base_plan
+        # Build a revised plan note that a previous attempt failed.
+        return RemediationPlan(
+            plan_id=base_plan.plan_id,
+            finding_id=base_plan.finding_id,
+            vulnerability_type=base_plan.vulnerability_type,
+            target_file=base_plan.target_file,
+            target_line=base_plan.target_line,
+            strategy=base_plan.strategy,
+            security_invariant=base_plan.security_invariant,
+            reason=(
+                f"[Revised — attempt {previous_feedback.attempt_number + 1}] "
+                f"Previous attempt ({prev_strategy!r}) caused existing-test "
+                f"failures: {previous_feedback.failed_existing_tests}.  "
+                f"Re-applying the same strategy with awareness of those failures.  "
+                f"{base_plan.reason}"
+            ),
+            original_code=base_plan.original_code,
+            proposed_code=base_plan.proposed_code,
+            validation_requirements=base_plan.validation_requirements,
+            confidence=base_plan.confidence,
+        )
+
+    # Case 2: finding is still present after patching.
+    # The patch did not actually eliminate the vulnerability.
+    if finding_present:
+        return _planning_failure(
+            finding,
+            reason=(
+                f"Attempt {previous_feedback.attempt_number} did not eliminate "
+                f"the finding.  The security analyzer still detects the original "
+                f"dangerous pattern after patching.  "
+                f"This may indicate the patch missed the actual call site, "
+                f"or the vulnerability exists in multiple locations.  "
+                f"Human review required."
+            ),
+        )
+
+    # Case 3: security regression test itself failed.
+    # The patch was applied but the behavioral security test reports failure.
+    if security_failed:
+        return _planning_failure(
+            finding,
+            reason=(
+                f"Attempt {previous_feedback.attempt_number} applied the patch "
+                f"but the security regression test failed.  "
+                f"Failed tests: {previous_feedback.failed_security_tests}.  "
+                f"The replacement code may not satisfy the behavioral security "
+                f"invariant.  Human review required."
+            ),
+        )
+
+    # Case 4: patch was not applied at all (drift, path traversal, etc.)
+    # Re-plan from scratch — the baseline may have shifted.
+    return plan_remediation(finding, inventory)

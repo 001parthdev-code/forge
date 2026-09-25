@@ -278,3 +278,389 @@ class AppliedPatch:
     def to_dict(self) -> dict:
         """Return a plain dict suitable for JSON serialisation."""
         return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Module 5 — Security Test Generator models
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class SecurityRegressionTest:
+    """
+    A behavioral security regression test produced by the Test Generator.
+
+    Traceability chain:
+        SecurityFinding → RemediationPlan → AppliedPatch → SecurityRegressionTest
+
+    The test is intended to provide behavioral evidence that the remediated
+    implementation treats dynamic/untrusted input as data, not as shell syntax.
+    It does NOT execute real processes; mock-based verification is used instead.
+
+    All fields are JSON-serializable via dataclasses.asdict() / to_dict().
+    """
+
+    # Deterministic identifier: SHA-256 hex of "sectest|<patch_id>", 16 chars.
+    test_id: str
+
+    # The SecurityFinding.id this test guards against.  Explicit traceability.
+    finding_id: str
+
+    # The RemediationPlan.plan_id that produced the patch under test.
+    plan_id: str
+
+    # The AppliedPatch.patch_id that this test verifies.
+    patch_id: str
+
+    # Repository-relative path of the file under test.
+    target_file: str
+
+    # Repository-relative path where this test should be written.
+    test_file: str
+
+    # Name of the test function (importable pytest test name).
+    test_name: str
+
+    # One-line description of the security property this test exercises.
+    security_property: str
+
+    # Complete source code of the generated test function (a valid Python string).
+    test_code: str
+
+    # Human-readable description of the behavior the test must confirm.
+    expected_behavior: str
+
+    def to_dict(self) -> dict:
+        """Return a plain dict suitable for JSON serialisation."""
+        return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass
+class DesiredOutcome:
+    """
+    Explicit specification of what the bounded engineering loop must achieve
+    before a remediation attempt is considered complete.
+
+    This model describes the *desired state*.  It does NOT record whether the
+    state has been reached — that is the responsibility of a later Verifier.
+
+    Traceability chain:
+        SecurityFinding → DesiredOutcome
+
+    All fields are JSON-serializable via dataclasses.asdict() / to_dict().
+    """
+
+    # Deterministic identifier: SHA-256 hex of "outcome|<finding_id>", 16 chars.
+    outcome_id: str
+
+    # The SecurityFinding.id this outcome specifies.
+    finding_id: str
+
+    # Ordered list of security invariants the remediation must enforce.
+    # None of these are satisfied at creation time; satisfaction is verified
+    # externally by a later Verifier module.
+    security_invariants: List[str]
+
+    # Ordered list of regression requirements that must hold after remediation.
+    regression_requirements: List[str]
+
+    # Ordered list of independent verification requirements.
+    verification_requirements: List[str]
+
+    def to_dict(self) -> dict:
+        """Return a plain dict suitable for JSON serialisation."""
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Module 6 — Executor models
+# ---------------------------------------------------------------------------
+
+# Category distinguishing which test suite produced the result.
+TestCategory = Literal["existing", "security"]
+
+
+@dataclasses.dataclass
+class ExecutionResult:
+    """
+    Structured evidence from a single test-suite execution.
+
+    SECURITY NOTE
+    -------------
+    The current executor uses subprocess without container isolation.
+    It is a *controlled* execution mechanism — it enforces argument arrays,
+    timeouts, and working-directory constraints — but it does NOT provide
+    host-level OS sandboxing.  A future Rust enforcement boundary may add
+    stronger isolation.  Do not treat ``passed=True`` as evidence of sandboxed
+    execution.
+
+    All fields are JSON-serializable via dataclasses.asdict().
+    """
+
+    # The exact argument array passed to subprocess (no shell expansion).
+    command: List[str]
+
+    # Process exit code, or -1 when the process was killed by timeout.
+    exit_code: int
+
+    # Captured standard output (UTF-8, errors replaced).
+    stdout: str
+
+    # Captured standard error (UTF-8, errors replaced).
+    stderr: str
+
+    # Wall-clock duration in seconds.
+    duration_seconds: float
+
+    # True when the process was terminated because it exceeded the timeout.
+    timed_out: bool
+
+    # True only when exit_code == 0 AND timed_out is False.
+    # NEVER inferred from stdout content alone.
+    passed: bool
+
+    # Which test suite this result represents ("existing" or "security").
+    test_category: TestCategory
+
+    def to_dict(self) -> dict:
+        """Return a plain dict suitable for JSON serialisation."""
+        return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass
+class TestSuiteResult:
+    """
+    Combined execution evidence from both test suites run against a workspace.
+
+    overall_passed is True only when BOTH suites passed.
+
+    All fields are JSON-serializable via dataclasses.asdict().
+    """
+
+    # Result of running the project's pre-existing test suite.
+    existing_tests: ExecutionResult
+
+    # Result of running the generated security regression test.
+    security_tests: ExecutionResult
+
+    # True only when both existing_tests.passed AND security_tests.passed.
+    overall_passed: bool
+
+    def to_dict(self) -> dict:
+        """Return a plain dict suitable for JSON serialisation."""
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Module 7 — Verifier models
+# ---------------------------------------------------------------------------
+
+# All possible reasons a verification can fail.
+VerificationFailureReason = Literal[
+    "patch_not_applied",
+    "existing_tests_failed",
+    "security_regression_failed",
+    "finding_still_present",
+    "security_invariant_failed",
+    "execution_timeout",
+]
+
+
+@dataclasses.dataclass
+class VerificationResult:
+    """
+    Independent verification outcome for one remediation attempt.
+
+    ``verified`` is True ONLY when ALL of the following hold:
+
+        1. patch.applied is True
+        2. existing_tests_passed is True
+        3. security_tests_passed is True
+        4. security_invariant_satisfied is True
+        5. finding_eliminated is True
+
+    Every condition is independently evaluated.  ``tests passed`` alone does
+    NOT imply ``security verified``.  ``finding disappeared`` alone does NOT
+    imply ``behavior preserved``.
+
+    All fields are JSON-serializable via dataclasses.asdict().
+    """
+
+    # Stable identifier: SHA-256 hex of "verify|<patch_id>|<attempt>", 16 chars.
+    verification_id: str
+
+    # Traceability links.
+    finding_id: str
+    plan_id: str
+    patch_id: str
+    attempt_number: int
+
+    # Individual verification dimensions.
+    existing_tests_passed: bool
+    security_tests_passed: bool
+    security_invariant_satisfied: bool
+    finding_eliminated: bool
+
+    # Composite: True only when ALL four dimensions above are True AND patch
+    # was successfully applied.
+    verified: bool
+
+    # Structured list of failure reasons; empty when verified is True.
+    failure_reasons: List[VerificationFailureReason]
+
+    # Human-readable summary of what was verified and why it passed or failed.
+    evidence: str
+
+    def to_dict(self) -> dict:
+        """Return a plain dict suitable for JSON serialisation."""
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Module 8 — Attempt models
+# ---------------------------------------------------------------------------
+
+# Terminal status of one remediation attempt.
+AttemptStatus = Literal["VERIFIED", "REJECTED", "ERROR"]
+
+
+@dataclasses.dataclass
+class FailureFeedback:
+    """
+    Structured failure evidence produced by a rejected remediation attempt.
+
+    This is consumed by the planner in the NEXT attempt to guide a *revised*
+    remediation strategy rather than blindly repeating the previous one.
+
+    All fields are JSON-serializable via dataclasses.asdict().
+    """
+
+    # Which attempt number this feedback originates from.
+    attempt_number: int
+
+    # The plan that was tried and failed.
+    previous_plan_id: str
+    previous_strategy: str
+
+    # Names of existing tests that failed (empty when existing tests passed).
+    failed_existing_tests: List[str]
+
+    # Names of security regression tests that failed (empty when they passed).
+    failed_security_tests: List[str]
+
+    # Security findings still detected in the patched workspace.
+    # Each entry is a finding_id string.
+    remaining_security_finding_ids: List[str]
+
+    # Structured verification failure codes from VerificationResult.
+    verification_failures: List[str]
+
+    # Human-readable summary suitable for guiding the next remediation attempt.
+    summary: str
+
+    def to_dict(self) -> dict:
+        """Return a plain dict suitable for JSON serialisation."""
+        return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass
+class AttemptResult:
+    """
+    Complete evidence record for one remediation attempt.
+
+    Every attempt — whether it succeeds or fails — produces an inspectable
+    evidence trail.  No attempt is silently discarded.
+
+    All fields are JSON-serializable via dataclasses.asdict().
+    """
+
+    # 1-based attempt counter within the current workflow.
+    attempt_number: int
+
+    # --- Input artifacts ---
+    finding: SecurityFinding
+    plan: RemediationPlan
+    patch: AppliedPatch
+    security_test: SecurityRegressionTest
+    desired_outcome: DesiredOutcome
+
+    # --- Execution and verification evidence ---
+    # None when execution could not be started (e.g. workspace error).
+    execution: Optional[TestSuiteResult]
+
+    # None when execution did not complete (e.g. error before verification).
+    verification: Optional[VerificationResult]
+
+    # Terminal status for this attempt.
+    status: AttemptStatus
+
+    # Populated when status is REJECTED; None when VERIFIED or ERROR.
+    failure_feedback: Optional[FailureFeedback]
+
+    # Wall-clock duration of this attempt in seconds.
+    duration_seconds: float
+
+    def to_dict(self) -> dict:
+        """Return a plain dict suitable for JSON serialisation."""
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Module 9 — Workflow result model
+# ---------------------------------------------------------------------------
+
+# Final status of the complete remediation workflow.
+WorkflowStatus = Literal["VERIFIED", "HUMAN_REVIEW_REQUIRED", "ERROR"]
+
+
+@dataclasses.dataclass
+class RemediationWorkflowResult:
+    """
+    Top-level result of the bounded remediation engineering loop.
+
+    CANONICAL REPOSITORY SAFETY
+    ---------------------------
+    A VERIFIED status means the remediation passed all checks in an isolated
+    workspace.  The successful workspace is *retained* but the patch is NOT
+    automatically written back to the caller's original repository.
+
+    Applying the verified patch to the canonical repository is a separate,
+    explicit decision.  The ``final_patch`` field contains the authorised
+    patch artifact; ``workspace_path`` contains the retained workspace.
+
+    All fields are JSON-serializable via dataclasses.asdict().
+    """
+
+    # Stable workflow run identifier: UUID4 hex string.
+    workflow_id: str
+
+    # The SecurityFinding this workflow was initiated for.
+    original_finding: SecurityFinding
+
+    # VERIFIED, HUMAN_REVIEW_REQUIRED, or ERROR.
+    status: WorkflowStatus
+
+    # Number of remediation attempts made (≤ max_attempts).
+    attempt_count: int
+
+    # Complete ordered evidence trail — one AttemptResult per attempt.
+    attempts: List[AttemptResult]
+
+    # Present when status is VERIFIED; None otherwise.
+    final_verification: Optional[VerificationResult]
+
+    # Present when status is VERIFIED; None otherwise.
+    final_patch: Optional[AppliedPatch]
+
+    # Absolute path to the retained successful workspace when VERIFIED.
+    # None when status is not VERIFIED.
+    # NOTE: This workspace is NOT automatically applied to the source
+    # repository.  The caller is responsible for that decision.
+    workspace_path: Optional[str]
+
+    # Total wall-clock duration of the workflow in seconds.
+    duration_seconds: float
+
+    def to_dict(self) -> dict:
+        """Return a plain dict suitable for JSON serialisation."""
+        return dataclasses.asdict(self)
