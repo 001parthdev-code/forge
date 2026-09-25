@@ -385,7 +385,7 @@ def {test_name}() -> None:
             pass
 
         # --- Security assertions ---
-{textwrap.indent(arg_assertion, "        ")}
+{textwrap.indent(arg_assertion, "    ")}
 '''
     return code
 
