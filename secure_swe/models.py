@@ -7,7 +7,7 @@ All models are plain dataclasses and are JSON-serializable via dataclasses.asdic
 from __future__ import annotations
 
 import dataclasses
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 
 @dataclasses.dataclass
@@ -76,6 +76,63 @@ class RepoInventory:
 
     # Aggregate summary statistics.
     summary: InventorySummary
+
+    def to_dict(self) -> dict:
+        """Return a plain dict suitable for JSON serialisation."""
+        return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Module 2 — Security Analyzer models
+# ---------------------------------------------------------------------------
+
+# Severity levels ordered from highest to lowest impact.
+Severity = Literal["HIGH", "MEDIUM", "LOW", "INFO"]
+
+# Confidence levels reflecting the strength of evidence.
+Confidence = Literal["HIGH", "MEDIUM", "LOW"]
+
+
+@dataclasses.dataclass
+class SecurityFinding:
+    """
+    A single, evidence-backed security finding produced by the Security Analyzer.
+
+    All fields are JSON-serializable via dataclasses.asdict().
+
+    The *id* is a deterministic hex digest derived from the combination of
+    (vulnerability_type, file, line, sink) so that re-analyzing an identical
+    inventory yields identical IDs.
+    """
+
+    # Stable, deterministic identifier for this specific finding instance.
+    # SHA-256 hex of "<vulnerability_type>|<file>|<line>|<sink>".
+    id: str
+
+    # Short label for the class of vulnerability (e.g. "command_injection").
+    vulnerability_type: str
+
+    # Assessed severity.
+    severity: Severity
+
+    # Repository-relative path of the file containing the finding.
+    file: str
+
+    # 1-based line number of the dangerous sink call.
+    line: int
+
+    # String representation of the dangerous sink expression (e.g. "os.system").
+    sink: str
+
+    # Verbatim source snippet or reconstructed expression that demonstrates
+    # how dynamic input reaches the sink.  Kept short (single line preferred).
+    evidence: str
+
+    # Human-readable explanation of why this pattern is security-relevant.
+    reason: str
+
+    # Confidence level in the finding.
+    confidence: Confidence
 
     def to_dict(self) -> dict:
         """Return a plain dict suitable for JSON serialisation."""
