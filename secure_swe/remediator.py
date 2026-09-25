@@ -267,6 +267,8 @@ def _plan_command_injection(
         return _planning_failure(finding, "Exact dangerous source expression is unavailable.")
 
     cmd_expr = call.args[0]
+    direct_dynamic_name = cmd_expr.id if isinstance(cmd_expr, ast.Name) else None
+    resolved_assignment = False
 
     # Resolve a simple straight-line local assignment such as:
     #   command = f"nslookup {target}"
@@ -281,6 +283,7 @@ def _plan_command_injection(
         ]
         if candidates:
             cmd_expr = max(candidates, key=lambda n: n.lineno).value
+            resolved_assignment = True
 
     dynamic_expr = None
     static_tokens: List[str] = []
@@ -296,11 +299,28 @@ def _plan_command_injection(
         if isinstance(cmd_expr.left, ast.Constant) and isinstance(cmd_expr.left.value, str):
             static_tokens = cmd_expr.left.value.split()
             dynamic_expr = ast.get_source_segment(source, cmd_expr.right)
+    elif isinstance(cmd_expr, ast.Name) and not resolved_assignment:
+        # Direct dynamic command argument, e.g. os.system(cmd).  Keep the
+        # variable itself as data; this remains a supported narrow v0 pattern.
+        dynamic_expr = direct_dynamic_name
 
     # Fall back to the older static extraction for supported direct patterns.
     if not static_tokens:
         static_tokens = static_args
-    dynamic_expr = dynamic_expr or _DYNAMIC_PLACEHOLDER
+
+    # If we cannot identify the dynamic expression, do not emit a placeholder
+    # into executable Python.  This is an explicit v0 capability boundary:
+    # complex command construction requires human review rather than a
+    # fabricated remediation.
+    if dynamic_expr is None:
+        return _planning_failure(
+            finding,
+            reason=(
+                "The dynamic command expression could not be reconstructed "
+                "deterministically from the supported local source patterns. "
+                "Human review required."
+            ),
+        )
 
     argv = "[" + ", ".join([*(f'\"{a}\"' for a in static_tokens), dynamic_expr]) + "]"
 
@@ -541,31 +561,57 @@ def plan_remediation_with_feedback(
                     f"Failed tests: {previous_feedback.failed_existing_tests}."
                 ),
             )
-        # Force the alternative strategy by producing a fresh plan and
-        # overriding the strategy field.
         base_plan = plan_remediation(finding, inventory)
         if base_plan.strategy in ("unsupported", "planning_failure"):
             return base_plan
-        # Build a revised plan note that a previous attempt failed.
-        return RemediationPlan(
-            plan_id=base_plan.plan_id,
-            finding_id=base_plan.finding_id,
-            vulnerability_type=base_plan.vulnerability_type,
-            target_file=base_plan.target_file,
-            target_line=base_plan.target_line,
-            strategy=base_plan.strategy,
-            security_invariant=base_plan.security_invariant,
+
+        # A common reason the first safe argv transformation breaks behavior is
+        # that it removes non-shell subprocess keyword arguments (for example
+        # check=True, timeout=..., or capture_output=True).  On the second
+        # attempt, preserve those original behavioral kwargs while still
+        # removing shell=True.  This gives the loop a genuinely different,
+        # evidence-driven remediation rather than retrying the same patch.
+        if prev_strategy == "replace_shell_string_with_arg_list":
+            try:
+                original_expr = ast.parse(base_plan.original_code, mode="eval").body
+                proposed_expr = ast.parse(base_plan.proposed_code or "", mode="eval").body
+                if isinstance(original_expr, ast.Call) and isinstance(proposed_expr, ast.Call):
+                    preserved = [
+                        kw for kw in original_expr.keywords
+                        if kw.arg is not None and kw.arg != "shell"
+                    ]
+                    proposed_expr.keywords.extend(preserved)
+                    revised_code = ast.unparse(proposed_expr)
+                    return RemediationPlan(
+                        plan_id=base_plan.plan_id,
+                        finding_id=base_plan.finding_id,
+                        vulnerability_type=base_plan.vulnerability_type,
+                        target_file=base_plan.target_file,
+                        target_line=base_plan.target_line,
+                        strategy="replace_shell_string_preserve_safe_kwargs",
+                        security_invariant=base_plan.security_invariant,
+                        reason=(
+                            f"[Revised — attempt {previous_feedback.attempt_number + 1}] "
+                            f"The first argv remediation removed shell interpretation but "
+                            f"broke existing behavior. Preserve the original non-shell "
+                            f"subprocess keyword arguments while continuing to omit shell=True. "
+                            f"Failed tests: {previous_feedback.failed_existing_tests}."
+                        ),
+                        original_code=base_plan.original_code,
+                        proposed_code=revised_code,
+                        validation_requirements=base_plan.validation_requirements,
+                        confidence=base_plan.confidence,
+                    )
+            except (SyntaxError, ValueError):
+                pass
+
+        return _planning_failure(
+            finding,
             reason=(
-                f"[Revised — attempt {previous_feedback.attempt_number + 1}] "
-                f"Previous attempt ({prev_strategy!r}) caused existing-test "
-                f"failures: {previous_feedback.failed_existing_tests}.  "
-                f"Re-applying the same strategy with awareness of those failures.  "
-                f"{base_plan.reason}"
+                f"Attempt {previous_feedback.attempt_number} broke existing behavior, "
+                f"but no safe alternative transformation could be derived from the "
+                f"available source evidence. Human review required."
             ),
-            original_code=base_plan.original_code,
-            proposed_code=base_plan.proposed_code,
-            validation_requirements=base_plan.validation_requirements,
-            confidence=base_plan.confidence,
         )
 
     # Case 2: finding is still present after patching.
