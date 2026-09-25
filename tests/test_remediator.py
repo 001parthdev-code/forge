@@ -162,15 +162,15 @@ def ping(host):
         # Must use list syntax
         assert "[" in plan.proposed_code
 
-    def test_proposed_code_uses_placeholder_for_indirect_variable(self) -> None:
-        # In SOURCE, subprocess.run receives the variable `command` (not an inline
-        # f-string), so the planner cannot statically determine the program name
-        # from the call line alone.  It must emit a dynamic-value placeholder
-        # rather than inventing a program name.
+    def test_proposed_code_resolves_simple_indirect_variable(self) -> None:
+        # The v0 planner resolves a simple straight-line local assignment feeding
+        # the dangerous sink so it can construct a concrete argv remediation.
         finding = self._finding()
         plan = plan_remediation(finding, self._inventory())
         assert plan.proposed_code is not None
-        assert "<dynamic_value>" in plan.proposed_code
+        assert "<dynamic_value>" not in plan.proposed_code
+        assert '"ping"' in plan.proposed_code
+        assert "host" in plan.proposed_code
 
     def test_security_invariant_present(self) -> None:
         finding = self._finding()
@@ -294,10 +294,11 @@ def ping_host(host):
         assert plan.security_invariant
         assert len(plan.security_invariant) > 20
 
-    def test_original_code_from_finding(self) -> None:
+    def test_original_code_is_complete_dangerous_call(self) -> None:
         finding = self._finding()
         plan = plan_remediation(finding, self._inventory())
-        assert plan.original_code == finding.evidence
+        assert plan.original_code.startswith("os.system(")
+        assert finding.evidence in plan.original_code or "ping -c 1" in plan.original_code
 
     def test_os_system_variable_arg(self) -> None:
         source = "import os\ndef run(cmd): os.system(cmd)\n"

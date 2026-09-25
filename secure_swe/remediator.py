@@ -243,47 +243,86 @@ def _plan_command_injection(
     finding: SecurityFinding,
     source: str,
 ) -> RemediationPlan:
-    """
-    Build a RemediationPlan for a command_injection finding given the source.
-
-    Chooses strategy based on the sink:
-      - os.system            → replace_os_system_with_subprocess_list
-      - subprocess.*  shell  → replace_shell_string_with_arg_list
-    """
+    """Build an actionable plan for the supported command-injection patterns."""
     sink = finding.sink
     parts = _extract_command_parts(source, finding.line)
     static_args = _split_static_args(parts)
 
+    # Locate the exact call expression so the patcher replaces the dangerous
+    # operation itself rather than a small evidence token inside it.
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return _planning_failure(finding, "Target source could not be parsed.")
+
+    call = next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.Call) and n.lineno == finding.line),
+        None,
+    )
+    if call is None or not call.args:
+        return _planning_failure(finding, "Dangerous call could not be reconciled with source.")
+
+    original_call = ast.get_source_segment(source, call)
+    if not original_call:
+        return _planning_failure(finding, "Exact dangerous source expression is unavailable.")
+
+    cmd_expr = call.args[0]
+
+    # Resolve a simple straight-line local assignment such as:
+    #   command = f"nslookup {target}"
+    #   subprocess.run(command, shell=True)
+    # This is intentionally local and deterministic, not general taint analysis.
+    if isinstance(cmd_expr, ast.Name):
+        candidates = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Assign)
+            and n.lineno < call.lineno
+            and any(isinstance(t, ast.Name) and t.id == cmd_expr.id for t in n.targets)
+        ]
+        if candidates:
+            cmd_expr = max(candidates, key=lambda n: n.lineno).value
+
+    dynamic_expr = None
+    static_tokens: List[str] = []
+    if isinstance(cmd_expr, ast.JoinedStr):
+        static_text = ""
+        for value in cmd_expr.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                static_text += value.value
+            elif isinstance(value, ast.FormattedValue) and dynamic_expr is None:
+                dynamic_expr = ast.get_source_segment(source, value.value)
+        static_tokens = static_text.split()
+    elif isinstance(cmd_expr, ast.BinOp) and isinstance(cmd_expr.op, ast.Add):
+        if isinstance(cmd_expr.left, ast.Constant) and isinstance(cmd_expr.left.value, str):
+            static_tokens = cmd_expr.left.value.split()
+            dynamic_expr = ast.get_source_segment(source, cmd_expr.right)
+
+    # Fall back to the older static extraction for supported direct patterns.
+    if not static_tokens:
+        static_tokens = static_args
+    dynamic_expr = dynamic_expr or _DYNAMIC_PLACEHOLDER
+
+    argv = "[" + ", ".join([*(f'\"{a}\"' for a in static_tokens), dynamic_expr]) + "]"
+
     if sink == "os.system":
         strategy: RemediationStrategy = "replace_os_system_with_subprocess_list"
-        proposed = _build_os_system_replacement(static_args)
+        # os.system returns an integer status. Preserve that observable contract.
+        proposed = f"subprocess.run({argv}, check=False).returncode"
         reason = (
-            f"`os.system` executes its argument via a shell.  "
-            f"The dynamic expression `{finding.evidence}` allows an attacker "
-            f"to inject arbitrary shell commands.  "
-            f"Replace `os.system` with `subprocess.run` using a structured "
-            f"argument list so each token is passed as literal data."
+            "`os.system` executes through a shell. Replace the complete call with "
+            "structured subprocess arguments so dynamic input remains data."
         )
-        confidence = "HIGH" if static_args else "MEDIUM"
-
+        confidence = "HIGH" if static_tokens and dynamic_expr != _DYNAMIC_PLACEHOLDER else "MEDIUM"
     elif sink in ("subprocess.run", "subprocess.call", "subprocess.Popen"):
         strategy = "replace_shell_string_with_arg_list"
-        proposed = _build_subprocess_list_call(static_args, sink)
+        proposed = f"{sink}({argv})"
         reason = (
-            f"`{sink}` is called with `shell=True` and a dynamically "
-            f"constructed string argument (`{finding.evidence}`).  "
-            f"Remove `shell=True` and pass a structured argument list so the "
-            f"dynamic value is treated as literal data, not shell syntax."
+            f"`{sink}` uses shell=True with dynamic input. Replace the complete call "
+            "with structured arguments and no shell interpretation."
         )
-        confidence = "HIGH" if static_args else "MEDIUM"
-
+        confidence = "HIGH" if static_tokens and dynamic_expr != _DYNAMIC_PLACEHOLDER else "MEDIUM"
     else:
-        # Sink is in the finding but not handled — should not normally occur
-        # for a command_injection finding, but be defensive.
-        return _unsupported_plan(
-            finding,
-            reason=f"Sink `{sink}` is not handled by the v0 planner.",
-        )
+        return _unsupported_plan(finding, reason=f"Sink `{sink}` is not handled by the v0 planner.")
 
     return RemediationPlan(
         plan_id=_plan_id(finding.id),
@@ -294,7 +333,7 @@ def _plan_command_injection(
         strategy=strategy,
         security_invariant=_SECURITY_INVARIANT,
         reason=reason,
-        original_code=finding.evidence,
+        original_code=original_call,
         proposed_code=proposed,
         validation_requirements=list(_VALIDATION_REQUIREMENTS),
         confidence=confidence,

@@ -284,8 +284,10 @@ def _build_subprocess_list_test(
     """
     # Determine the mock target based on the original sink.
     if sink == "os.system":
-        mock_target = "os.system"
-        mock_import = "import os"
+        # The remediation replaces os.system with subprocess.run, so the
+        # regression test must observe the post-remediation execution boundary.
+        mock_target = "subprocess.run"
+        mock_import = "import subprocess"
         arg_assertion = f'    mock_exec.assert_called_once()\n'
         arg_assertion += (
             f'    call_args = mock_exec.call_args\n'

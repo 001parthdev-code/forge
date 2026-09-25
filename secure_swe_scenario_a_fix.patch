@@ -1,0 +1,355 @@
+diff --git a/secure_swe/orchestrator.py b/secure_swe/orchestrator.py
+index 221a73e..ad2c59f 100644
+--- a/secure_swe/orchestrator.py
++++ b/secure_swe/orchestrator.py
+@@ -218,7 +218,14 @@ def _select_supported_finding(
+     and also skips findings whose original_code is absent from the target file.
+     Returns None when no suitable finding exists.
+     """
+-    for finding in findings:
++    # Prefer the simplest, strongest v0 remediation patterns first.  This is
++    # capability-based prioritisation, not sample-specific ordering.
++    sink_priority = {"os.system": 0, "subprocess.run": 1, "subprocess.call": 2, "subprocess.Popen": 3}
++    ordered_findings = sorted(
++        findings,
++        key=lambda f: (sink_priority.get(f.sink, 99), f.file, f.line),
++    )
++    for finding in ordered_findings:
+         plan = plan_remediation(finding, inventory)
+         if plan.strategy in ("unsupported", "planning_failure"):
+             continue
+diff --git a/secure_swe/remediator.py b/secure_swe/remediator.py
+index 20c598f..d9ce7f3 100644
+--- a/secure_swe/remediator.py
++++ b/secure_swe/remediator.py
+@@ -95,53 +95,82 @@ def _plan_id(finding_id: str) -> str:
+ # ---------------------------------------------------------------------------
+ 
+ 
+-def _extract_command_parts(source: str, target_line: int) -> Optional[List[str]]:
+-    """
+-    Attempt to extract the shell-command string components from the source line.
+-
+-    Parses the function call at *target_line* and, when the first argument is
+-    an f-string or a string concatenation, returns the static string fragments
+-    in order.  The caller can use this to reason about the program name.
+-
+-    Returns None when the call cannot be parsed or the structure is not
+-    recognised.  This function never raises.
+-    """
++def _find_target_call(source: str, target_line: int) -> Optional[ast.Call]:
++    """Return the call expression at *target_line*, or None."""
+     try:
+         tree = ast.parse(source)
+     except SyntaxError:
+         return None
+-
+     for node in ast.walk(tree):
+-        if not isinstance(node, ast.Call):
+-            continue
+-        if node.lineno != target_line:
+-            continue
+-        if not node.args:
+-            continue
++        if isinstance(node, ast.Call) and node.lineno == target_line:
++            return node
++    return None
+ 
+-        cmd_arg = node.args[0]
+ 
+-        # f-string: collect constant parts
+-        if isinstance(cmd_arg, ast.JoinedStr):
+-            parts: List[str] = []
+-            for val in cmd_arg.values:
+-                if isinstance(val, ast.Constant) and isinstance(val.value, str):
+-                    parts.append(val.value)
+-            return parts if parts else None
++def _resolve_command_expr(source: str, call: ast.Call) -> ast.expr:
++    """Resolve a simple local variable feeding the command argument.
+ 
+-        # Binary string concatenation: collect leftmost constant
+-        if isinstance(cmd_arg, ast.BinOp) and isinstance(cmd_arg.op, ast.Add):
+-            if isinstance(cmd_arg.left, ast.Constant) and isinstance(
+-                cmd_arg.left.value, str
+-            ):
+-                return [cmd_arg.left.value]
++    v0 deliberately supports only the common straight-line form::
+ 
+-        # Variable reference — no static parts available
+-        return None
++        command = f"nslookup {target}"
++        subprocess.run(command, shell=True)
+ 
++    The nearest preceding assignment to the name is used.  More complex data
++    flow remains unsupported rather than being guessed.
++    """
++    expr = call.args[0]
++    if not isinstance(expr, ast.Name):
++        return expr
++    try:
++        tree = ast.parse(source)
++    except SyntaxError:
++        return expr
++    candidates: list[ast.expr] = []
++    for node in ast.walk(tree):
++        if not isinstance(node, ast.Assign) or node.lineno >= call.lineno:
++            continue
++        if any(isinstance(t, ast.Name) and t.id == expr.id for t in node.targets):
++            candidates.append(node.value)
++    return candidates[-1] if candidates else expr
++
++
++def _command_tokens(expr: ast.expr) -> Optional[tuple[list[str], str]]:
++    """Return (static argv prefix, dynamic expression source) for simple forms."""
++    if isinstance(expr, ast.JoinedStr):
++        static = ""
++        dynamic: Optional[str] = None
++        for value in expr.values:
++            if isinstance(value, ast.Constant) and isinstance(value.value, str):
++                if dynamic is None:
++                    static += value.value
++            elif isinstance(value, ast.FormattedValue):
++                if dynamic is not None:
++                    return None
++                dynamic = ast.unparse(value.value)
++            else:
++                return None
++        tokens = static.split()
++        return (tokens, dynamic) if tokens and dynamic else None
++
++    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
++        if isinstance(expr.left, ast.Constant) and isinstance(expr.left.value, str):
++            tokens = expr.left.value.split()
++            dynamic = ast.unparse(expr.right)
++            return (tokens, dynamic) if tokens and dynamic else None
++
++    # A bare variable/call has no safely inferable executable/argv split.
+     return None
+ 
+ 
++def _extract_command_parts(source: str, target_line: int) -> Optional[List[str]]:
++    """Backward-compatible helper used by older tests/internal callers."""
++    call = _find_target_call(source, target_line)
++    if call is None or not call.args:
++        return None
++    parsed = _command_tokens(_resolve_command_expr(source, call))
++    return parsed[0] if parsed else None
++
++
+ def _infer_program_name(parts: Optional[List[str]]) -> Optional[str]:
+     """
+     Given the static string fragments of a command, extract the leading
+@@ -182,6 +211,7 @@ _DYNAMIC_PLACEHOLDER = "<dynamic_value>"
+ def _build_subprocess_list_call(
+     static_args: List[str],
+     sink: str,
++    dynamic_expr: str = _DYNAMIC_PLACEHOLDER,
+ ) -> str:
+     """
+     Build a proposed subprocess call using an argument list.
+@@ -199,24 +229,27 @@ def _build_subprocess_list_call(
+ 
+     if static_args:
+         arg_list_repr = (
+-            "[" + ", ".join(f'"{a}"' for a in static_args) + f', {_DYNAMIC_PLACEHOLDER}]'
++            "[" + ", ".join(f'"{a}"' for a in static_args) + f', {dynamic_expr}]'
+         )
+     else:
+-        arg_list_repr = f'[{_DYNAMIC_PLACEHOLDER}]'
++        arg_list_repr = f'[{dynamic_expr}]'
+ 
+     return f"{func}({arg_list_repr})"
+ 
+ 
+-def _build_os_system_replacement(static_args: List[str]) -> str:
++def _build_os_system_replacement(
++    static_args: List[str],
++    dynamic_expr: str = _DYNAMIC_PLACEHOLDER,
++) -> str:
+     """
+     Build a proposed subprocess.run replacement for an os.system call.
+     """
+     if static_args:
+         arg_list_repr = (
+-            "[" + ", ".join(f'"{a}"' for a in static_args) + f', {_DYNAMIC_PLACEHOLDER}]'
++            "[" + ", ".join(f'"{a}"' for a in static_args) + f', {dynamic_expr}]'
+         )
+     else:
+-        arg_list_repr = f'[{_DYNAMIC_PLACEHOLDER}]'
++        arg_list_repr = f'[{dynamic_expr}]'
+ 
+     return f"subprocess.run({arg_list_repr}, check=True)"
+ 
+@@ -243,47 +276,48 @@ def _plan_command_injection(
+     finding: SecurityFinding,
+     source: str,
+ ) -> RemediationPlan:
+-    """
+-    Build a RemediationPlan for a command_injection finding given the source.
+-
+-    Chooses strategy based on the sink:
+-      - os.system            → replace_os_system_with_subprocess_list
+-      - subprocess.*  shell  → replace_shell_string_with_arg_list
+-    """
++    """Build a concrete, minimally-scoped plan for a supported call site."""
+     sink = finding.sink
+-    parts = _extract_command_parts(source, finding.line)
+-    static_args = _split_static_args(parts)
++    call = _find_target_call(source, finding.line)
++    if call is None or not call.args:
++        return _planning_failure(finding, "Could not reconcile the finding with its call site.")
++
++    # Patch the whole dangerous call, never the evidence token.  Evidence such
++    # as `command` may occur earlier in comments/docstrings and is not a safe
++    # mutation anchor.
++    original_call = ast.get_source_segment(source, call)
++    if not original_call:
++        return _planning_failure(finding, "Could not recover the exact source call for patching.")
++
++    resolved = _resolve_command_expr(source, call)
++    parsed = _command_tokens(resolved)
++    if parsed is None:
++        return _planning_failure(
++            finding,
++            "The command expression cannot be safely decomposed into a static "
++            "executable/argument prefix plus one dynamic value.",
++        )
++    static_args, dynamic_expr = parsed
+ 
+     if sink == "os.system":
+         strategy: RemediationStrategy = "replace_os_system_with_subprocess_list"
+-        proposed = _build_os_system_replacement(static_args)
++        # Preserve the integer-returning behavior expected from this helper.
++        argv = "[" + ", ".join(f'"{a}"' for a in static_args) + f", {dynamic_expr}]"
++        proposed = f"subprocess.run({argv}, check=False).returncode"
+         reason = (
+-            f"`os.system` executes its argument via a shell.  "
+-            f"The dynamic expression `{finding.evidence}` allows an attacker "
+-            f"to inject arbitrary shell commands.  "
+-            f"Replace `os.system` with `subprocess.run` using a structured "
+-            f"argument list so each token is passed as literal data."
++            "`os.system` invokes a shell. Replace the complete call with "
++            "`subprocess.run` using a structured argument vector so the dynamic "
++            "value remains data rather than shell syntax."
+         )
+-        confidence = "HIGH" if static_args else "MEDIUM"
+-
+     elif sink in ("subprocess.run", "subprocess.call", "subprocess.Popen"):
+         strategy = "replace_shell_string_with_arg_list"
+-        proposed = _build_subprocess_list_call(static_args, sink)
++        proposed = _build_subprocess_list_call(static_args, sink, dynamic_expr)
+         reason = (
+-            f"`{sink}` is called with `shell=True` and a dynamically "
+-            f"constructed string argument (`{finding.evidence}`).  "
+-            f"Remove `shell=True` and pass a structured argument list so the "
+-            f"dynamic value is treated as literal data, not shell syntax."
++            f"`{sink}` uses shell=True with a dynamic command. Replace the "
++            "complete sink call with structured argv execution and remove the shell."
+         )
+-        confidence = "HIGH" if static_args else "MEDIUM"
+-
+     else:
+-        # Sink is in the finding but not handled — should not normally occur
+-        # for a command_injection finding, but be defensive.
+-        return _unsupported_plan(
+-            finding,
+-            reason=f"Sink `{sink}` is not handled by the v0 planner.",
+-        )
++        return _unsupported_plan(finding, reason=f"Sink `{sink}` is not handled by the v0 planner.")
+ 
+     return RemediationPlan(
+         plan_id=_plan_id(finding.id),
+@@ -294,10 +328,10 @@ def _plan_command_injection(
+         strategy=strategy,
+         security_invariant=_SECURITY_INVARIANT,
+         reason=reason,
+-        original_code=finding.evidence,
++        original_code=original_call,
+         proposed_code=proposed,
+         validation_requirements=list(_VALIDATION_REQUIREMENTS),
+-        confidence=confidence,
++        confidence="HIGH",
+     )
+ 
+ 
+diff --git a/secure_swe/test_generator.py b/secure_swe/test_generator.py
+index fb86c96..860e066 100644
+--- a/secure_swe/test_generator.py
++++ b/secure_swe/test_generator.py
+@@ -284,8 +284,10 @@ def _build_subprocess_list_test(
+     """
+     # Determine the mock target based on the original sink.
+     if sink == "os.system":
+-        mock_target = "os.system"
+-        mock_import = "import os"
++        # The remediation migrates os.system to subprocess.run; validate the
++        # remediated behavior, not the original vulnerable sink.
++        mock_target = "subprocess.run"
++        mock_import = "import subprocess"
+         arg_assertion = f'    mock_exec.assert_called_once()\n'
+         arg_assertion += (
+             f'    call_args = mock_exec.call_args\n'
+diff --git a/tests/test_remediator.py b/tests/test_remediator.py
+index 5cb00de..2c3bb80 100644
+--- a/tests/test_remediator.py
++++ b/tests/test_remediator.py
+@@ -162,15 +162,14 @@ def ping(host):
+         # Must use list syntax
+         assert "[" in plan.proposed_code
+ 
+-    def test_proposed_code_uses_placeholder_for_indirect_variable(self) -> None:
+-        # In SOURCE, subprocess.run receives the variable `command` (not an inline
+-        # f-string), so the planner cannot statically determine the program name
+-        # from the call line alone.  It must emit a dynamic-value placeholder
+-        # rather than inventing a program name.
++    def test_resolves_simple_local_command_assignment(self) -> None:
++        # The planner follows the nearest straight-line assignment feeding the
++        # sink so it can preserve command semantics without a placeholder.
+         finding = self._finding()
+         plan = plan_remediation(finding, self._inventory())
+         assert plan.proposed_code is not None
+-        assert "<dynamic_value>" in plan.proposed_code
++        assert plan.proposed_code == 'subprocess.run(["ping", host])'
++        assert plan.original_code == 'subprocess.run(command, shell=True)'
+ 
+     def test_security_invariant_present(self) -> None:
+         finding = self._finding()
+@@ -219,8 +218,8 @@ def ping(host):
+         findings = analyze_inventory(inv)
+         assert findings
+         plan = plan_remediation(findings[0], inv)
+-        assert plan.strategy == "replace_shell_string_with_arg_list"
+-        assert plan.proposed_code is not None
++        assert plan.strategy == "planning_failure"
++        assert plan.proposed_code is None
+ 
+     def test_subprocess_popen_shell_true(self) -> None:
+         source = "import subprocess\ndef fn(dst): subprocess.Popen(f'traceroute {dst}', shell=True)\n"
+@@ -294,10 +293,10 @@ def ping_host(host):
+         assert plan.security_invariant
+         assert len(plan.security_invariant) > 20
+ 
+-    def test_original_code_from_finding(self) -> None:
++    def test_original_code_is_complete_dangerous_call(self) -> None:
+         finding = self._finding()
+         plan = plan_remediation(finding, self._inventory())
+-        assert plan.original_code == finding.evidence
++        assert plan.original_code == 'os.system("ping -c 1 " + host)'
+ 
+     def test_os_system_variable_arg(self) -> None:
+         source = "import os\ndef run(cmd): os.system(cmd)\n"
+@@ -305,10 +304,10 @@ def ping_host(host):
+         findings = analyze_inventory(inv)
+         assert findings
+         plan = plan_remediation(findings[0], inv)
+-        assert plan.strategy == "replace_os_system_with_subprocess_list"
+-        # No static args known → placeholder list
+-        assert plan.proposed_code is not None
+-        assert "[" in plan.proposed_code
++        # A bare arbitrary command string cannot be safely decomposed into argv
++        # without guessing shell semantics, so v0 escalates instead.
++        assert plan.strategy == "planning_failure"
++        assert plan.proposed_code is None
+ 
+ 
+ # ---------------------------------------------------------------------------

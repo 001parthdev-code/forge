@@ -218,7 +218,17 @@ def _select_supported_finding(
     and also skips findings whose original_code is absent from the target file.
     Returns None when no suitable finding exists.
     """
-    for finding in findings:
+    sink_priority = {
+        "os.system": 0,
+        "subprocess.run": 1,
+        "subprocess.call": 2,
+        "subprocess.Popen": 3,
+    }
+    ordered_findings = sorted(
+        findings,
+        key=lambda f: (sink_priority.get(f.sink, 99), f.file, f.line),
+    )
+    for finding in ordered_findings:
         plan = plan_remediation(finding, inventory)
         if plan.strategy in ("unsupported", "planning_failure"):
             continue
@@ -308,7 +318,7 @@ def _run_attempt(
                 verification=None,
                 status="ERROR",
                 failure_feedback=None,
-                duration_seconds=round(time.monotonic() - start, 3),
+                duration_seconds=time.monotonic() - start,
             )
             _discard_workspace(workspace)
             return attempt, None
@@ -335,7 +345,7 @@ def _run_attempt(
                 verification=None,
                 status="REJECTED",
                 failure_feedback=feedback,
-                duration_seconds=round(time.monotonic() - start, 3),
+                duration_seconds=time.monotonic() - start,
             )
             _discard_workspace(workspace)
             workspace = None
@@ -365,7 +375,7 @@ def _run_attempt(
                 verification=None,
                 status="ERROR",
                 failure_feedback=None,
-                duration_seconds=round(time.monotonic() - start, 3),
+                duration_seconds=time.monotonic() - start,
             )
             _discard_workspace(workspace)
             workspace = None
@@ -416,7 +426,7 @@ def _run_attempt(
             verification=verification,
             status=status,
             failure_feedback=feedback,
-            duration_seconds=round(time.monotonic() - start, 3),
+            duration_seconds=time.monotonic() - start,
         )
 
         if verification.verified:
@@ -476,7 +486,7 @@ def _run_attempt(
             verification=None,
             status="ERROR",
             failure_feedback=None,
-            duration_seconds=round(duration, 3),
+            duration_seconds=duration,
         )
         return attempt, None
 
@@ -645,7 +655,7 @@ def run_secure_remediation(
             final_verification=None,
             final_patch=None,
             workspace_path=None,
-            duration_seconds=round(time.monotonic() - workflow_start, 3),
+            duration_seconds=time.monotonic() - workflow_start,
         )
 
     if not findings:
@@ -669,7 +679,7 @@ def run_secure_remediation(
             final_verification=None,
             final_patch=None,
             workspace_path=None,
-            duration_seconds=round(time.monotonic() - workflow_start, 3),
+            duration_seconds=time.monotonic() - workflow_start,
         )
 
     finding = _select_supported_finding(findings, inventory, baseline=baseline)
@@ -684,7 +694,7 @@ def run_secure_remediation(
             final_verification=None,
             final_patch=None,
             workspace_path=None,
-            duration_seconds=round(time.monotonic() - workflow_start, 3),
+            duration_seconds=time.monotonic() - workflow_start,
         )
 
     logger.info(
@@ -773,5 +783,5 @@ def run_secure_remediation(
         final_verification=final_verification,
         final_patch=final_patch,
         workspace_path=str(final_workspace) if final_workspace else None,
-        duration_seconds=round(time.monotonic() - workflow_start, 3),
+        duration_seconds=time.monotonic() - workflow_start,
     )
