@@ -137,3 +137,74 @@ class SecurityFinding:
     def to_dict(self) -> dict:
         """Return a plain dict suitable for JSON serialisation."""
         return dataclasses.asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Module 3 — Remediation Planner models
+# ---------------------------------------------------------------------------
+
+# Remediation strategy labels.
+RemediationStrategy = Literal[
+    "replace_shell_string_with_arg_list",
+    "replace_os_system_with_subprocess_list",
+    "unsupported",
+    "planning_failure",
+]
+
+
+@dataclasses.dataclass
+class RemediationPlan:
+    """
+    A deterministic, evidence-backed remediation plan produced by the
+    Remediation Planner for a single SecurityFinding.
+
+    A plan NEVER modifies repository files.  It records *what* should be
+    done and *why*, so that a later patch-application module can act on it.
+
+    The *plan_id* is derived deterministically from the *finding_id*, so
+    the same finding always produces the same plan identifier.
+
+    All fields are JSON-serializable via dataclasses.asdict().
+    """
+
+    # Stable, deterministic identifier for this plan.
+    # SHA-256 hex of "plan|<finding_id>", truncated to 16 chars.
+    plan_id: str
+
+    # The SecurityFinding.id that caused this plan.  Explicit traceability link.
+    finding_id: str
+
+    # Mirrors SecurityFinding.vulnerability_type for convenience.
+    vulnerability_type: str
+
+    # Repository-relative path of the file to be remediated.
+    target_file: str
+
+    # 1-based line number of the dangerous sink call.
+    target_line: int
+
+    # Machine-readable strategy label.
+    strategy: RemediationStrategy
+
+    # The security invariant this plan enforces.
+    security_invariant: str
+
+    # Human-readable explanation of the chosen strategy.
+    reason: str
+
+    # Verbatim source snippet of the vulnerable expression (from the finding).
+    original_code: str
+
+    # Proposed replacement code snippet.
+    # None when strategy is "unsupported" or "planning_failure".
+    proposed_code: Optional[str]
+
+    # Ordered list of requirements a later verification stage must satisfy.
+    validation_requirements: List[str]
+
+    # Planner confidence in the proposed transformation.
+    confidence: Confidence
+
+    def to_dict(self) -> dict:
+        """Return a plain dict suitable for JSON serialisation."""
+        return dataclasses.asdict(self)
