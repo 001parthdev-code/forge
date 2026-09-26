@@ -6,12 +6,15 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-316%20passing-brightgreen)](#controlled-evaluation)
 [![Live Demo](https://img.shields.io/badge/demo-Hugging%20Face-yellow)](https://huggingface.co/spaces/Devparthox01/secure-swe)
+
+
+> **Don't trust the patch. Verify the outcome.**
+
+[Live Demo](https://huggingface.co/spaces/Devparthox01/secure-swe)
 · [Architecture](docs/ARCHITECTURE.md)
 · [Threat Model](docs/THREAT_MODEL.md)
 · [Evaluation](docs/EVALUATION.md)
 · [Security](SECURITY.md)
-
-> **Don't trust the patch. Verify the outcome.**
 
 Secure SWE is an evidence-driven, bounded autonomous security-remediation agent.
 
