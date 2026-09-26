@@ -16,6 +16,13 @@
 · [Evaluation](docs/EVALUATION.md)
 · [Security](SECURITY.md)
 
+
+<p align="center">
+  <img src="assets/secure-swe-demo.png"
+       alt="Secure SWE rejecting an initial remediation and verifying a revised attempt"
+       width="900">
+</p>
+
 Secure SWE is an evidence-driven, bounded autonomous security-remediation agent.
 
 Instead of stopping when a vulnerability is detected or a patch is generated, Secure SWE engineers toward a **verified security outcome**:
