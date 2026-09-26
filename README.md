@@ -1,7 +1,7 @@
 # Secure SWE
 
-[![CI](https://github.com/001parthdev-code/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/001parthdev-code/forge/blob/master/.github/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/001parthdev-code/forge)](https://github.com/001parthdev-code/forge/releases/tag/v1.0.0)
+[![CI](https://github.com/001parthdev-code/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/001parthdev-code/forge/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/001parthdev-code/forge)](https://github.com/001parthdev-code/forge/releases/latest)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-316%20passing-brightgreen)](#controlled-evaluation)
@@ -9,6 +9,9 @@
 
 
 > **Don't trust the patch. Verify the outcome.**
+
+An evidence-driven autonomous security-remediation agent that rejects bad fixes,
+re-engineers from failure evidence, and escalates when it cannot safely converge.
 
 [Live Demo](https://huggingface.co/spaces/Devparthox01/secure-swe)
 · [Architecture](docs/ARCHITECTURE.md)
@@ -22,6 +25,19 @@
        alt="Secure SWE rejecting an initial remediation and verifying a revised attempt"
        width="900">
 </p>
+
+<p align="center">
+  <a href="https://huggingface.co/spaces/Devparthox01/secure-swe"><b>Live Demo</b></a>
+  ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a>
+  ·
+  <a href="docs/EVALUATION.md">Evaluation</a>
+</p>
+
+> [!IMPORTANT]
+> Secure SWE v1.0 is a research/hackathon prototype focused on command-injection
+> remediation in controlled Python repositories. Its workspace isolation is not
+> a hardened OS sandbox for arbitrary hostile code.
 
 Secure SWE is an evidence-driven, bounded autonomous security-remediation agent.
 
@@ -383,7 +399,8 @@ Evaluation artifacts are retained in the repository for reproducibility.
 
 ### Requirements
 
-- Python 3.12
+- Python 3.11+
+- Python 3.12 recommended/reference environment
 - Git
 
 Clone the repository:
