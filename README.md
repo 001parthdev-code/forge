@@ -13,12 +13,6 @@
 An evidence-driven autonomous security-remediation agent that rejects bad fixes,
 re-engineers from failure evidence, and escalates when it cannot safely converge.
 
-[Live Demo](https://huggingface.co/spaces/Devparthox01/secure-swe)
-· [Architecture](docs/ARCHITECTURE.md)
-· [Threat Model](docs/THREAT_MODEL.md)
-· [Evaluation](docs/EVALUATION.md)
-· [Security](SECURITY.md)
-
 
 <p align="center">
   <img src="assets/secure-swe-demo.png"
