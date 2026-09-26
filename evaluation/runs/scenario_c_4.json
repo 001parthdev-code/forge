@@ -1,0 +1,39 @@
+{
+  "workflow_id": "b418d1ebd7f644389af624b3172a60d9",
+  "original_finding": {
+    "id": "3488486e3d4c5c85",
+    "vulnerability_type": "command_injection",
+    "severity": "HIGH",
+    "file": "app/system.py",
+    "line": 10,
+    "sink": "subprocess.run",
+    "evidence": "command",
+    "reason": "The first argument to `subprocess.run` is a dynamically constructed expression (`command`).  If any contributing variable carries externally-supplied input, an attacker may inject arbitrary shell commands.  Note: this analyzer does not perform cross-file taint analysis; the input provenance cannot be confirmed.",
+    "confidence": "MEDIUM"
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "attempt_count": 0,
+  "attempts": [],
+  "final_verification": null,
+  "final_patch": null,
+  "workspace_path": null,
+  "duration_seconds": 0.0,
+  "_metrics": {
+    "workflow_id": "b418d1ebd7f644389af624b3172a60d9",
+    "final_status": "HUMAN_REVIEW_REQUIRED",
+    "total_attempts": 0,
+    "verified_attempt_number": null,
+    "rejected_attempt_count": 0,
+    "error_attempt_count": 0,
+    "automated_stages_per_attempt": 7,
+    "total_automated_stages": 0,
+    "existing_test_pass_count": 0,
+    "security_test_pass_count": 0,
+    "workflow_duration_seconds": 0.0,
+    "attempt_durations_seconds": [],
+    "finding_type": "command_injection",
+    "finding_severity": "HIGH",
+    "strategies_attempted": [],
+    "feedback_loops_triggered": 0
+  }
+}

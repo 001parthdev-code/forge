@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Secure SWE — Verified Security Remediation</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="eyebrow">SECURE SWE · IBM BOB 2.0 HACKATHON</div>
+      <h1>Don't trust the patch.<br><span>Verify the outcome.</span></h1>
+      <p>Secure SWE detects command injection, engineers a remediation, tests it, rejects regressions, and stops only at <strong>VERIFIED</strong> — or escalates to a human.</p>
+      <div class="proof"><span>15/15</span> expected terminal decisions across controlled evaluation runs</div>
+    </header>
+
+    <section class="scenario-section">
+      <div class="section-head"><div><span class="step">01</span><h2>Choose a controlled scenario</h2></div><p>No arbitrary repository execution in this prototype.</p></div>
+      <div id="scenario-grid" class="scenario-grid"></div>
+      <button id="run-btn" class="run-btn" disabled><span>RUN SECURE SWE</span><span class="arrow">→</span></button>
+    </section>
+
+    <section id="run-panel" class="run-panel hidden">
+      <div class="section-head"><div><span class="step">02</span><h2>Evidence trail</h2></div><div id="run-status" class="status-chip running">RUNNING</div></div>
+      <div id="finding" class="finding"></div>
+      <div id="attempts" class="attempts"></div>
+      <div id="final" class="final-card hidden"></div>
+    </section>
+
+    <section class="evaluation">
+      <div class="section-head"><div><span class="step">03</span><h2>Controlled evaluation</h2></div><p>15 synthetic runs · local development machine</p></div>
+      <div class="metric-grid">
+        <article><strong>5/5</strong><span>Direct remediations verified</span></article>
+        <article><strong>5/5</strong><span>Bad first remediations rejected & revised</span></article>
+        <article><strong>5/5</strong><span>Unsupported cases escalated safely</span></article>
+        <article><strong>5/5</strong><span>Unsupported cases left unmodified</span></article>
+      </div>
+      <p class="scope-note">Scope: Python · command injection · controlled synthetic repositories. The current executor is bounded but is not a strong OS sandbox.</p>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

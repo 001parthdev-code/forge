@@ -33,3 +33,6 @@ artifacts/*
 # Evaluation output
 evaluation/results/*
 !evaluation/results/.gitkeep
+
+# Local handoff / build archives
+*.zip
